@@ -1,6 +1,8 @@
 #include "DHT.h"
 #include <MQ135.h>
 #include <MQUnifiedsensor.h>
+#include <LiquidCrystal.h>
+#include <Arduino.h>
 
 // Definitions for MQ sensors and DHT
 #define BOARD "Arduino UNO"
@@ -9,21 +11,36 @@
 #define RATIO_MQ7_CLEAN_AIR 27.5 // RS/R0 ratio in clean air for MQ-7
 #define RATIO_MQ135_CLEAN_AIR 3.6 // RS/R0 ratio in clean air for MQ-135
 
+const int rs = 9, en = 8, d4 = 6, d5 = 5, d6 = 4, d7 = 3;
+LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
+
 // Pin definitions
 #define DHT_PIN 2 // DHT sensor pin
 #define MQ7_PIN A4 // Analog input for MQ7
 #define MQ135_PIN A0 // Analog input for MQ135
 #define PWM_PIN 5 // PWM control pin for MQ7 heating
 
+
+// Define thresholds for harmful conditions
+const float CO_THRESHOLD = 4.0; // Example threshold for CO in ppm
+
+
 // Sensor Objects
 DHT dht;
 MQUnifiedsensor MQ7(BOARD, VOLTAGE_RESOLUTION, ADC_BIT_RESOLUTION, MQ7_PIN, "MQ-7");
 MQUnifiedsensor MQ135(BOARD, VOLTAGE_RESOLUTION, ADC_BIT_RESOLUTION, MQ135_PIN, "MQ-135");
 
+
 void setup() {
   Serial.begin(9600);
   dht.setup(2); // data pin 2
 
+    // set up the LCD's number of columns and rows:
+  lcd.begin(16, 2);
+
+  lcd.print("Air Quality");
+  lcd.setCursor(0, 1);
+  lcd.print("Meter");
     /*
     MQ-135
     Exponential regression:
@@ -92,44 +109,63 @@ void setup() {
   MQ7.serialDebug(true);
 }
 
+
 void loop() {
-  // Reading from DHT sensor
-  float humidity = dht.getHumidity();
-  float temperature = dht.getTemperature();
-  
-  if (isnan(humidity) || isnan(temperature)) {
-    Serial.println("Failed to read from DHT sensor!");
-    return;
+  unsigned long startTime = millis();
+  float sumHumidity = 0, sumTemperature = 0, sumPPMMQ135 = 0, sumPPMMQ7 = 0;
+  int count = 0;
+
+  while (millis() - startTime < 15000) { 
+    // Reading from DHT sensor
+    float humidity = dht.getHumidity();
+    float temperature = dht.getTemperature();
+    if (!isnan(humidity) && !isnan(temperature)) {
+      sumHumidity += humidity;
+      sumTemperature += temperature;
+    }
+
+    // Update and read from MQ135 sensor (NH4)
+    MQ135.update();
+    float ppmMQ135 = MQ135.readSensor();
+    sumPPMMQ135 += ppmMQ135;
+
+    // Update and read from MQ7 sensor (CO)
+    MQ7.update();
+    float ppmMQ7 = MQ7.readSensor();
+    sumPPMMQ7 += ppmMQ7;
+
+    count++;
+    delay(1000); // Delay 1 second between readings
   }
 
-  // Update and read from MQ135 sensor
-  MQ135.update(); 
-  float ppmMQ135 = MQ135.readSensor(); // Read concentration from MQ135
+  // Calculate the average readings
+  float avgTemperature = sumTemperature / count;
+  float avgPPMMQ135 = sumPPMMQ135 / count; // Average NH4
+  float avgPPMMQ7 = sumPPMMQ7 / count; // Average CO
 
-  // Update and read from MQ7 sensor
-  MQ7.update(); 
-  float ppmMQ7 = MQ7.readSensor(); // Read CO concentration from MQ7
+  // Display the average readings
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("NH4:");
+  lcd.print(avgPPMMQ135, 1);
+  lcd.print(" CO:");
+  lcd.print(avgPPMMQ7, 1);
 
-  // Print DHT sensor readings
-  Serial.print("Humidity: ");
-  Serial.print(humidity);
-  Serial.print("%  Temperature: ");
-  Serial.print(temperature);
-  Serial.println("°C");
+  lcd.setCursor(0, 1);
+  lcd.print("Temp:");
+  lcd.print(avgTemperature, 1);
+  lcd.print("C");
 
-  // Print MQ135 sensor readings
-  Serial.print("MQ135 PPM: ");
-  Serial.println(ppmMQ135);
+  delay(10000); // Display averages for 10 seconds
 
-  // Print MQ7 sensor readings
-  Serial.print("MQ7 CO PPM: ");
-  Serial.println(ppmMQ7);
-
-  // Basic inference logic based on sensor readings
-  if (ppmMQ135 > 1000 || ppmMQ7 > 50) {
-    Serial.println("Warning: High levels of pollutants detected!");
+  // Determine if the environment is harmful
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  if (avgPPMMQ7 > CO_THRESHOLD) {
+    lcd.print("Harmful Air!");
+  } else {
+    lcd.print("Air is Safe"); 
   }
 
-  // Wait some time before next loop iteration
-  delay(1000);
+  delay(5000); // Display the safety message for 5 seconds
 }
